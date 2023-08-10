@@ -12,9 +12,6 @@
 #define VOLEX_PREFIX "[volex-conn]"
 #define AGENT_BLUEPRINT "vlx_led"
 
-// std::vector<Task> tasks;
-// std::stack<int> finishedTasks;
-
 // ESP-NOW
 uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 esp_now_peer_info_t peerInfo;
@@ -77,35 +74,6 @@ void wifi_try_connect() {
 }
 
 void onWifiConnect() {
-  // tasks.push_back(std::move(DependentTask(
-  //     std::vector{MyWiFi::dependency},
-  //     [](ITask *task) -> void { setMillis(task, 0); },
-  //     [](ITask *task) -> boolean {
-  //       auto prevMillis = getMillis(task);
-  //       auto currMillis = millis();
-  //       if (currMillis - prevMillis >= 2000) {
-  //         setMillis(task, currMillis);
-
-  //         Serial.print("Resolving IP address for ");
-  //         Serial.print(MQTT_HOST);
-  //         Serial.println("...");
-
-  //         auto ip = MyWiFi::resolveBrokerIp(MQTT_HOST);
-  //         if (ip == INADDR_NONE) {
-  //           Serial.println("Could not find MQTT host. Retrying in 2
-  //           seconds"); return false;
-  //         }
-
-  //         Serial.print("MQTT host IP address: ");
-  //         Serial.println(ip);
-  //         setMqttAddr(ip);
-  //         return true;
-  //       }
-
-  //       return false;
-  //     },
-  //     [](ITask *task) -> void { connectToMqtt(); })));
-
   Tasks::queueTask(new DependentTask(
       {MyWiFi::dependency},
       new TimedTask(
@@ -130,19 +98,19 @@ void onWifiConnect() {
 
 void onWifiDisconnect() {
   Serial.println("Trying to reconnect in 2 seconds");
-  // tasks.emplace_back(
-  //     [](ITask *task) -> void { setMillis(task, millis()); },
-  //     [](ITask *task) -> boolean { return millis() - getMillis(task) >=
-  //     2000;
-  //     },s
-  //     [](ITask *task) -> void {
-  //       MyWiFi::connectToWifi(CredentialsRetriever::getCredentials());
-  //     });
   Tasks::setTimeout(wifi_try_connect, 2000);
 }
 // WiFi END
 
 // MQTT
+void mqtt_try_connect() {
+  if (WiFi.isConnected()) {
+    connectToMqtt();
+  } else {
+    Serial.println("MQTT is waiting for a WiFi connection");
+  }
+}
+
 void onMqttConnect() {
   // Listen for config settings
   // subscribe(WiFi.macAddress().c_str());
@@ -158,13 +126,7 @@ void onMqttConnect() {
 
 void onMqttDisconnect() {
   Serial.println("Trying to reconnect in 2 seconds");
-  // tasks.push_back(std::move(DependentTask(
-  //     std::vector{MyWiFi::dependency},
-  //     [](ITask *task) -> void { setMillis(task, millis()); },
-  //     [](ITask *task) -> boolean { return millis() - getMillis(task) >=
-  //     2000;
-  //     },
-  //     [](ITask *task) -> void { connectToMqtt(); })));
+  Tasks::setTimeout(mqtt_try_connect, 2000);
 }
 // MQTT END
 
@@ -183,95 +145,6 @@ void setup() {
         Tasks::clearInterval(interval);
         wifi_try_connect();
       }));
-
-  // Tasks::setTimeout([interval]() { Tasks::clearInterval(interval); },
-  // 6000);
-
-  // Tasks::queueTask(Tasks::Task([]() {}, []() { return true; }, []() {}));
-  // Tasks::queueTask(DependentTask(
-  //     {MyWiFi::dependency}, []() {}, []() { return true; }, []() {}));
-  // DependentTask(
-  //     {MyWiFi::dependency}, []() {}, []() { return true; }, []() {});
-
-  // Tasks::queueTask(
-  //     DependentTask({MyWiFi::dependency}, DependentTask(
-  //                                             {MyWiFi::dependency}, []()
-  //                                             {},
-  //                                             []() { return true; }, []()
-  //                                             {})));
-
-  // Tasks::queueTask(Tasks::Task([]() {}, []() { return true; }, []() {}));
-
-  // DependentTask t(
-  //     {MyWiFi::dependency}, []() {}, []() { return true; }, []() {});
-
-  // tasks.emplace_back(
-  //     [](ITask *task) -> void {
-  //       request_credentials();
-  //       setMillis(task, millis());
-  //     },
-  //     [](ITask *task) -> boolean {
-  //       if (CredentialsRetriever::hasCredentials()) {
-  //         return true;
-  //       }
-
-  //       auto prevMillis = getMillis(task);
-  //       auto currMillis = millis();
-  //       if (currMillis - prevMillis >= 2000) {
-  //         Serial.println("Ask more");
-  //         request_credentials();
-  //         setMillis(task, currMillis);
-  //       }
-
-  //       return false;
-  //     },
-  //     [](ITask *task) -> void {
-  //       auto c = CredentialsRetriever::getCredentials();
-  //       Serial.println("Got credentials: " + c.ssid + " | " + c.pass);
-  //       MyWiFi::connectToWifi(c);
-  //     });
 }
 
-// unsigned long previousMillis;
-
-void loop() {
-  // wifiLoop();
-  Tasks::loop();
-
-  // int idx = 0;
-  // for (auto &task : tasks) {
-  //   if (!task.isStarted()) {
-  //     task.setup();
-  //   }
-
-  //   if (task.isFinished()) {
-  //     task.finish();
-  //     finishedTasks.push(idx);
-  //   }
-
-  //   idx++;
-  // }
-
-  // while (!finishedTasks.empty()) {
-  //   auto idxToRemove = finishedTasks.top();
-  //   tasks.erase(tasks.begin() + idxToRemove);
-  //   finishedTasks.pop();
-  // }
-
-  // auto currentMillis = millis();
-  // if (currentMillis - previousMillis >= 2000) {
-  //   Serial.println("heartbeat");
-  //   String s = VOLEX_PREFIX;
-  //   s += AGENT_BLUEPRINT;
-  //   esp_err_t result =
-  //       esp_now_send(broadcastAddress, (uint8_t *)s.c_str(), s.length() +
-  //       1);
-
-  //   if (result == ESP_OK) {
-  //     Serial.println("Sent with success");
-  //   } else {
-  //     Serial.println("Error sending the data");
-  //   }
-  //   previousMillis = currentMillis;
-  // }
-}
+void loop() { Tasks::loop(); }
