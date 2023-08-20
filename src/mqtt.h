@@ -1,12 +1,17 @@
 #ifndef MQTT_H
 #define MQTT_H
 
+#include <ArduinoJson.h>
 #include <AsyncMqttClient.h>
 #include <map>
 #include <queue>
 
 #define MQTT_HOST "volex.local"
 #define MQTT_PORT 1883
+
+namespace Mqtt {
+std::shared_ptr<boolean> dependency = nullptr;
+};
 
 AsyncMqttClient mqttClient;
 
@@ -32,6 +37,7 @@ MqttConfig config;
 
 void _onMqttConnect(bool sessionPresent) {
   Serial.println("Connected to MQTT broker!");
+  Mqtt::dependency = std::make_shared<boolean>(true);
   if (config.onConnect != nullptr) {
     config.onConnect();
   }
@@ -68,6 +74,9 @@ void _onMqttDisconnect(AsyncMqttClientDisconnectReason reason) {
     Serial.println("unknown cause");
     break;
   }
+  if (Mqtt::dependency != nullptr) {
+    *Mqtt::dependency = false;
+  }
 
   std::queue<MqttEvent>().swap(mqttEventQueue);
 
@@ -97,8 +106,15 @@ void onMqttMessage(char *topic, char *payload,
   Serial.print("  topic: ");
   Serial.println(topic);
   Serial.print("  payload: ");
-  Serial.println(payload);
-  // eventQueue.push({.topic = String(topic), .payload = String(payload)});
+  Serial.println(String(payload, len));
+  Serial.print("  len: ");
+  Serial.println(len);
+  Serial.print("  index: ");
+  Serial.println(index);
+  Serial.print("  total: ");
+  Serial.println(total);
+  mqttEventQueue.push(
+      {.topic = String(topic), .payload = String(payload, len)});
 }
 
 // void onMqttPublish(uint16_t packetId) {
@@ -108,19 +124,46 @@ void onMqttMessage(char *topic, char *payload,
 // }
 } // namespace
 
-// void subscribe(const char *topic, TopicHandler handler = prettyPrintHandler)
-// {
-//   Serial.print("Subscribing to: ");
-//   Serial.println(topic);
-//   // topicHandlers.emplace(String(topic), handler);
-//   mqttClient.subscribe(topic, 0);
-// }
+void prettyPrintHandler(const String &payload) {
+  StaticJsonDocument<256> doc;
+  auto err = deserializeJson(doc, payload);
+  if (err) {
+    Serial.println("Failed to parse JSON");
+    return;
+  }
+  String json;
+  serializeJsonPretty(doc, json);
+  Serial.println("Received:");
+  Serial.println(json);
+  Serial.println("====");
+  doc.clear();
+}
+
+void handle(const MqttEvent &e) {
+  Serial.print("Starting to handle: ");
+  Serial.println(e.topic);
+  auto handlerIter = mqttTopicHandlers.find(e.topic);
+  if (handlerIter == mqttTopicHandlers.end()) {
+    Serial.println("No handler found");
+    return;
+  }
+  handlerIter->second(e.payload);
+}
+
+void subscribe(const char *topic, TopicHandler handler = prettyPrintHandler) {
+  Serial.print("Subscribing to: ");
+  Serial.println(topic);
+  mqttTopicHandlers.emplace(String(topic), handler);
+  mqttClient.subscribe(topic, 0);
+  Serial.print("Subscribed to: ");
+  Serial.println(topic);
+}
 
 void unsubscribe(const char *topic) {
   Serial.print("Unsubscribing from: ");
   Serial.println(topic);
   mqttClient.unsubscribe(topic);
-  // topicHandlers.erase(String(topic));
+  mqttTopicHandlers.erase(String(topic));
 }
 
 void mqtt_setup(MqttConfig user_config) {

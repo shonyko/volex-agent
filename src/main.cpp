@@ -1,4 +1,8 @@
+#define VLX_SLIDER
+
+#include <Agents.h>
 #include <Arduino.h>
+#include <Constants.h>
 #include <CredentialsRetriever.h>
 #include <CustomTasks.h>
 #include <MyWiFi.h>
@@ -10,7 +14,6 @@
 #include <vector>
 
 #define VOLEX_PREFIX "[volex-conn]"
-#define AGENT_BLUEPRINT "vlx_led"
 
 // ESP-NOW
 uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
@@ -98,6 +101,7 @@ void onWifiConnect() {
 
 void onWifiDisconnect() {
   Serial.println("Trying to reconnect in 2 seconds");
+  Agent::reset();
   Tasks::setTimeout(wifi_try_connect, 2000);
 }
 // WiFi END
@@ -113,19 +117,42 @@ void mqtt_try_connect() {
 
 void onMqttConnect() {
   // Listen for config settings
-  // subscribe(WiFi.macAddress().c_str());
+  subscribe(WiFi.macAddress().c_str(), Agent::applyConfig);
 
   // Request config
-  // TODO: make this retry if no answer
-  // mqttClient.publish(REQUEST_CONFIG, 0, false, WiFi.macAddress().c_str());
+  Tasks::queueTask(
+      new DependentTask(std::vector{MyWiFi::dependency, Mqtt::dependency},
+                        new TimedTask(
+                            []() {
+                              if (Agent::hasConfig()) {
+                                return true;
+                              }
 
-  // TODO:
-  // task pentru handle events
-  // task-uri separate pentru ciclu citire senzor / transmitere date
+                              mqttClient.publish(REQUEST_CONFIG, 0, false,
+                                                 WiFi.macAddress().c_str());
+                              return false;
+                            },
+                            Agent::setupListeners, 2000)));
+
+  // Handle mqtt events
+  Tasks::queueTask(
+      new DependentTask(std::vector{MyWiFi::dependency, Mqtt::dependency},
+                        new Tasks::Task(
+                            Tasks::NoOp,
+                            []() {
+                              if (mqttEventQueue.size() != 0) {
+                                auto &event = mqttEventQueue.front();
+                                handle(event);
+                                mqttEventQueue.pop();
+                              }
+                              return false;
+                            },
+                            Tasks::NoOp)));
 }
 
 void onMqttDisconnect() {
   Serial.println("Trying to reconnect in 2 seconds");
+  Agent::reset();
   Tasks::setTimeout(mqtt_try_connect, 2000);
 }
 // MQTT END
@@ -134,6 +161,7 @@ void setup() {
   Serial.begin(115200);
   Serial.println();
 
+  Agent::setup();
   esp_now_setup();
   MyWiFi::wifi_setup(
       {.onConnect = onWifiConnect, .onDisconnect = onWifiDisconnect});

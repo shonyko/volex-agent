@@ -88,6 +88,7 @@ public:
                 Tasks::Task *task)
       : CompositeTask(task), deps(std::move(dependencies)) {}
 
+  // Idk why this does not work
   DependentTask(std::vector<std::shared_ptr<boolean>> dependencies,
                 Tasks::void_type setupFn, Tasks::bool_type checkFn,
                 Tasks::void_type callbackFn)
