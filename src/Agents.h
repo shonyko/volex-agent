@@ -21,6 +21,7 @@ struct input {
   int id;
   int src;
   String value;
+  std::function<void(const String &s)> handler;
 };
 
 void convertFromJson(JsonVariantConst src, Agent::param &dst) {
@@ -36,49 +37,23 @@ void convertFromJson(JsonVariantConst src, Agent::input &dst) {
   dst.value = json["value"].as<String>();
 }
 
-class Input {
-private:
-  std::function<void(const String &)> handler;
-  input in;
-
-public:
-  // Idk why this is needed
-  Input() {}
-
-  Input(std::function<void(const String &)> handler) : handler(handler) {}
-
-  void setInput(const input &in) {
-    handler(in.value);
-    subscribe(("pin/" + String(in.id)).c_str(), handler);
-    subscribe(("pin/" + String(in.src)).c_str(), handler);
-    this->in = std::move(in);
-  }
-
-  void updateInput(const input &in) {
-    handler(in.value);
-    unsubscribe(("pin/" + String(this->in.src)).c_str());
-    subscribe(("pin/" + String(in.src)).c_str(), handler);
-    this->in = std::move(in);
-  }
-};
-
 struct Config {
   int id;
   std::map<int, std::function<void(const String &s)>> params;
-  std::map<int, Input> inputs;
+  std::map<int, input> inputs;
   std::vector<int> outputs;
 
   Config(int id, std::map<int, std::function<void(const String &s)>> params,
-         std::map<int, Input> inputs, std::vector<int> outputs)
+         std::map<int, input> inputs, std::vector<int> outputs)
       : id(id), params(params), inputs(inputs), outputs(outputs) {}
 };
 
 namespace {
-std::shared_ptr<Config> config = nullptr;
+std::unique_ptr<Config> config = nullptr;
 }; // namespace
 
 std::vector<std::function<void(const String &s)>> getParamHandlers();
-std::vector<Input> getInputs();
+std::vector<std::function<void(const String &s)>> getInputHandlers();
 void _setup();
 void _reset();
 void _setupListeners();
@@ -94,30 +69,6 @@ void reset() {
 
 void setupListeners() { _setupListeners(); }
 
-void onInputUpdate(const String &s) {
-  StaticJsonDocument<256> doc;
-  auto err = deserializeJson(doc, s);
-  if (err) {
-    Serial.println("Failed to parse input");
-    return;
-  }
-
-  auto in = doc.as<Agent::input>();
-  config->inputs[in.id].updateInput(in);
-}
-
-void onParamUpdate(const String &s) {
-  StaticJsonDocument<256> doc;
-  auto err = deserializeJson(doc, s);
-  if (err) {
-    Serial.println("Failed to parse param");
-    return;
-  }
-
-  auto p = doc.as<Agent::param>();
-  config->params[p.id](p.value);
-}
-
 void applyConfig(const String &s) {
   Serial.println("Got config: " + s);
   StaticJsonDocument<256> doc;
@@ -130,28 +81,66 @@ void applyConfig(const String &s) {
   int id = doc["id"].as<int>();
   auto idStr = String(id);
 
-  subscribe((idStr + "/input").c_str(), onInputUpdate);
-  subscribe((idStr + "/param").c_str(), onParamUpdate);
-
   int idx = 0;
   auto param_handlers = getParamHandlers();
-  std::map<int, std::function<void(const String &s)>> params;
+  std::map<int, std::function<void(const String &s)>> paramsMap;
   auto param_arr = doc["params"].as<JsonArrayConst>();
   for (auto obj : param_arr) {
     auto param = obj.as<Agent::param>();
     param_handlers[idx](param.value);
-    params[param.id] = param_handlers[idx];
+    paramsMap[param.id] = param_handlers[idx];
+    auto paramId = param.id;
+    subscribe(
+        ("param/" + String(paramId)).c_str(),
+        [paramId](const String &value) { config->params[paramId](value); });
     idx++;
   }
 
   idx = 0;
-  auto inputs = getInputs();
-  std::map<int, Input> inputsMap;
+  auto input_handlers = getInputHandlers();
+  std::map<int, input> inputsMap;
   auto input_arr = doc["inputs"].as<JsonArrayConst>();
   for (auto obj : input_arr) {
     auto input = obj.as<Agent::input>();
-    inputs[idx].setInput(input);
-    inputsMap[input.id] = std::move(inputs[idx]);
+    input_handlers[idx](input.value);
+    input.handler = input_handlers[idx];
+    inputsMap[input.id] = input;
+    auto inputId = input.id;
+    subscribe(("pin/" + String(inputId)).c_str(),
+              [inputId](const String &value) {
+                config->inputs[inputId].handler(value);
+              });
+    subscribe(("pin/" + String(input.src)).c_str(),
+              [inputId](const String &value) {
+                config->inputs[inputId].handler(value);
+              });
+    subscribe(("pin/" + String(inputId) + "/src").c_str(),
+              [inputId](const String &json) {
+                StaticJsonDocument<256> doc;
+                auto err = deserializeJson(doc, json);
+                if (err) {
+                  Serial.println("Failed to parse config");
+                  return;
+                }
+
+                // Serial.print("Received new source for pin ");
+                // Serial.print(inputId);
+                // Serial.print(" : ");
+                // Serial.println(json);
+
+                auto src = doc.as<Agent::param>();
+                auto &input = config->inputs[inputId];
+                // Serial.print("Unsubscribing from: ");
+                // Serial.println(input.src);
+                unsubscribe(("pin/" + String(input.src)).c_str());
+                if (src.id) {
+                  input.handler(src.value);
+                  // Serial.print("Subscribing to: ");
+                  // Serial.println(src.id);
+                  subscribe(("pin/" + String(src.id)).c_str(), input.handler);
+                }
+                input.src = src.id;
+              });
     idx++;
   }
 
@@ -161,8 +150,8 @@ void applyConfig(const String &s) {
     outputs.push_back(out.as<int>());
   }
 
-  config = std::make_shared<Config>(id, std::move(params), std::move(inputsMap),
-                                    std::move(outputs));
+  config = std::make_unique<Config>(id, std::move(paramsMap),
+                                    std::move(inputsMap), std::move(outputs));
 }
 
 }; // namespace Agent
@@ -194,8 +183,8 @@ std::vector<std::function<void(const String &s)>> getParamHandlers() {
   return {};
 };
 
-std::vector<Input> getInputs() {
-  return {Input(update_power), Input(update_brightness)};
+std::vector<std::function<void(const String &s)>> getInputHandlers() {
+  return {update_power, update_brightness};
 }
 
 void _setup() {
@@ -225,7 +214,7 @@ bool last_state = false;
 unsigned long last_millis;
 
 bool publish_on_change = true;
-unsigned long publish_period = 500;
+unsigned long publish_period = 5000;
 
 void update_publish_mode(const String &s) {
   publish_on_change = trueStr.equalsIgnoreCase(s);
@@ -238,7 +227,9 @@ std::vector<std::function<void(const String &s)>> getParamHandlers() {
   return {update_publish_mode, update_publish_period};
 };
 
-std::vector<Input> getInputs() { return {}; }
+std::vector<std::function<void(const String &s)>> getInputHandlers() {
+  return {};
+}
 
 void send_val() {
   auto out_id = config->outputs.at(0);
@@ -254,17 +245,22 @@ void send_val() {
   last_millis = millis();
 }
 
-void _setup() { pinMode(SWITCH_PIN, INPUT_PULLUP); }
+void _setup() {
+  pinMode(LED_BUILTIN, OUTPUT);
+  pinMode(SWITCH_PIN, INPUT_PULLUP);
+}
 
 void _setupListeners() {
   Tasks::queueTask(new DependentTask(
       {dependency}, new Tasks::Task(
                         []() {
                           last_state = digitalRead(SWITCH_PIN);
+                          digitalWrite(LED_BUILTIN, last_state);
                           send_val();
                         },
                         []() {
                           auto state = digitalRead(SWITCH_PIN);
+                          digitalWrite(LED_BUILTIN, state);
                           if (publish_on_change) {
                             if (state != last_state) {
                               last_state = state;
@@ -301,7 +297,7 @@ int last_value = 0;
 unsigned long last_millis;
 
 bool publish_on_change = true;
-unsigned long publish_period = 500;
+unsigned long publish_period = 5000;
 
 void update_publish_mode(const String &s) {
   publish_on_change = trueStr.equalsIgnoreCase(s);
@@ -314,18 +310,20 @@ std::vector<std::function<void(const String &s)>> getParamHandlers() {
   return {update_publish_mode, update_publish_period};
 };
 
-std::vector<Input> getInputs() { return {}; }
+std::vector<std::function<void(const String &s)>> getInputHandlers() {
+  return {};
+}
 
 void send_val() {
   auto out_id = config->outputs.at(0);
   auto topic = "pin/" + String(out_id);
   auto payload = String((int)((last_value / 40.0) * 100));
-  Serial.print("out_id: ");
-  Serial.println(out_id);
-  Serial.print("topic: ");
-  Serial.println(topic);
-  Serial.print("payload: ");
-  Serial.println(payload);
+  // Serial.print("out_id: ");
+  // Serial.println(out_id);
+  // Serial.print("topic: ");
+  // Serial.println(topic);
+  // Serial.print("payload: ");
+  // Serial.println(payload);
   mqttClient.publish(topic.c_str(), 0, false, payload.c_str());
   last_millis = millis();
 }
